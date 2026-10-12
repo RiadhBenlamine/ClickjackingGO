@@ -26,7 +26,43 @@ func GetUrls() []string {
 	}
 	return urls
 }
-func Check(url string, c chan<- string) {
+func Check(url string, client *http.Client, c chan<- string, wg *sync.WaitGroup) {
+	defer wg.Done()
+	resp, err := client.Get(url)
+	if err != nil {
+		return
+	}
+
+	defer resp.Body.Close()
+
+	XfoSecure := false
+	CspSecure := false
+	XfoHeader := resp.Header.Values("X-Frame-Options")
+	CspHeader := resp.Header.Values("Content-Security-Policy")
+	for _, value := range XfoHeader {
+		if strings.Contains(value, "SAMEORIGIN") || strings.Contains(value, "DENY") {
+			XfoSecure = true
+		}
+	}
+	for _, value := range CspHeader {
+		value = strings.ToLower(value)
+		if strings.Contains(value, "frame-ancestors") {
+
+			CspSecure = true
+		}
+	}
+	if !XfoSecure || !CspSecure {
+		c <- url
+	}
+
+}
+
+func main() {
+	fmt.Println("Starting Clickjacking scanner")
+	ch := make(chan string)
+	var wg sync.WaitGroup
+	urls := GetUrls()
+	var vulnerableUrls []string
 	client := &http.Client{
 		Timeout: time.Second * 5,
 		Transport: &http.Transport{
@@ -35,41 +71,21 @@ func Check(url string, c chan<- string) {
 			},
 		},
 	}
-	resp, err := client.Get(url)
-	if err != nil {
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusOK && strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
-		_, hasXFrame := resp.Header["X-Frame-Options"]
-		_, hasCSP := resp.Header["Content-Security-Policy"]
-		if !hasXFrame && !hasCSP {
-			c <- url
-		}
-	}
 
-}
-
-func main() {
-	ch := make(chan string)
-	var wg sync.WaitGroup
-	urls := GetUrls()
-
-	fmt.Println("Starting Clickjacking scanner")
-	fmt.Println("Got ", len(urls), "urls to check.")
+	fmt.Println("Got ", len(urls), "URLs to check.")
 	for _, url := range urls {
 		wg.Add(1)
-		go func(url string) {
-			defer wg.Done()
-			Check(url, ch)
-		}(url)
+		go Check(url, client, ch, &wg)
 	}
+
 	go func() {
 		wg.Wait()
 		close(ch)
 	}()
 	for url := range ch {
+		vulnerableUrls = append(vulnerableUrls, url)
 		fmt.Println(url)
 	}
+	fmt.Println("[+] Total vulnerabilities: ", len(vulnerableUrls))
 	fmt.Println("Finished Clickjacking scanner")
 }
