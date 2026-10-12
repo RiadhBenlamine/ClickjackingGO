@@ -10,10 +10,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/urfave/cli/v2"
 )
 
-func GetUrls() []string {
-	file, err := os.Open("./vulnerable_urls.txt")
+func GetUrls(pathUrls string) []string {
+	file, err := os.Open(pathUrls)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -62,16 +64,64 @@ func worker(jobs <-chan string, ch chan<- string, client *http.Client, wg *sync.
 	}
 }
 
+type Config struct {
+	PathUrls   string
+	MaxWorkers int
+	Timeout    int
+	OutputFile string
+}
+
 func main() {
+	config := &Config{}
+	cmd := &cli.App{
+		Flags: []cli.Flag{
+			&cli.PathFlag{
+				Name:     "list",
+				Usage:    "List of URLs to scan",
+				Required: true,
+				Value:    "",
+				Aliases:  []string{"l"},
+			},
+			&cli.IntFlag{
+				Name:    "threads",
+				Aliases: []string{"t"},
+				Value:   10,
+				Usage:   "Number of threads",
+			},
+			&cli.IntFlag{
+				Name:    "timeout",
+				Aliases: []string{"T"},
+				Value:   30,
+				Usage:   "Timeout in seconds",
+			},
+			&cli.StringFlag{
+				Name:    "output",
+				Aliases: []string{"o"},
+				Value:   "",
+				Usage:   "Output file",
+			},
+		},
+		Action: func(c *cli.Context) error {
+			config.MaxWorkers = c.Int("threads")
+			config.Timeout = c.Int("timeout")
+			config.OutputFile = c.String("output")
+			config.PathUrls = c.Path("list")
+
+			return nil
+		},
+	}
+	if err := cmd.Run(os.Args); err != nil {
+		log.Fatal(err)
+	}
+
 	fmt.Println("Starting Clickjacking scanner")
-	maxWorkers := 20
 	jobs := make(chan string)
 	ch := make(chan string)
 	var wg sync.WaitGroup
-	urls := GetUrls()
+	urls := GetUrls(config.PathUrls)
 	var vulnerableUrls []string
 	client := &http.Client{
-		Timeout: time.Second * 5,
+		Timeout: time.Second * time.Duration(config.Timeout),
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
@@ -80,7 +130,7 @@ func main() {
 	}
 
 	fmt.Println("Got ", len(urls), "URLs to check.")
-	for workers := 1; workers <= maxWorkers; workers++ {
+	for workers := 1; workers <= config.MaxWorkers; workers++ {
 		wg.Add(1)
 		go worker(jobs, ch, client, &wg)
 
@@ -101,6 +151,25 @@ func main() {
 		vulnerableUrls = append(vulnerableUrls, url)
 		fmt.Println(url)
 	}
+
 	fmt.Println("[+] Total vulnerabilities: ", len(vulnerableUrls))
 	fmt.Println("Finished Clickjacking scanner")
+	if config.OutputFile != "" {
+		f, err := os.Create(config.OutputFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer f.Close()
+
+		w := bufio.NewWriter(f)
+		for _, url := range vulnerableUrls {
+			_, err := fmt.Fprintln(w, url)
+			if err != nil {
+				return
+			}
+		}
+		if err := w.Flush(); err != nil {
+			log.Fatal(err)
+		}
+	}
 }
