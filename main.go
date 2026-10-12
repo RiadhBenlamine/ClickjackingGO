@@ -26,8 +26,7 @@ func GetUrls() []string {
 	}
 	return urls
 }
-func Check(url string, client *http.Client, c chan<- string, wg *sync.WaitGroup) {
-	defer wg.Done()
+func Check(url string, client *http.Client, c chan<- string) {
 	resp, err := client.Get(url)
 	if err != nil {
 		return
@@ -56,9 +55,17 @@ func Check(url string, client *http.Client, c chan<- string, wg *sync.WaitGroup)
 	}
 
 }
+func worker(jobs <-chan string, ch chan<- string, client *http.Client, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for url := range jobs {
+		Check(url, client, ch)
+	}
+}
 
 func main() {
 	fmt.Println("Starting Clickjacking scanner")
+	maxWorkers := 20
+	jobs := make(chan string)
 	ch := make(chan string)
 	var wg sync.WaitGroup
 	urls := GetUrls()
@@ -73,10 +80,18 @@ func main() {
 	}
 
 	fmt.Println("Got ", len(urls), "URLs to check.")
-	for _, url := range urls {
+	for workers := 1; workers <= maxWorkers; workers++ {
 		wg.Add(1)
-		go Check(url, client, ch, &wg)
+		go worker(jobs, ch, client, &wg)
+
 	}
+	go func() {
+		defer close(jobs)
+
+		for _, url := range urls {
+			jobs <- url
+		}
+	}()
 
 	go func() {
 		wg.Wait()
