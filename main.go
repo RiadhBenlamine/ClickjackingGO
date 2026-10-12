@@ -38,10 +38,17 @@ func Check(url string, client *http.Client, c chan<- string) {
 
 	XfoSecure := false
 	CspSecure := false
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return
+	}
+	if !strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/html") {
+		return
+	}
 	XfoHeader := resp.Header.Values("X-Frame-Options")
 	CspHeader := resp.Header.Values("Content-Security-Policy")
 	for _, value := range XfoHeader {
-		if strings.Contains(value, "SAMEORIGIN") || strings.Contains(value, "DENY") {
+		value = strings.ToLower(value)
+		if strings.Contains(value, "sameorigin") || strings.Contains(value, "deny") {
 			XfoSecure = true
 		}
 	}
@@ -52,7 +59,7 @@ func Check(url string, client *http.Client, c chan<- string) {
 			CspSecure = true
 		}
 	}
-	if !XfoSecure || !CspSecure {
+	if !XfoSecure && !CspSecure {
 		c <- url
 	}
 
@@ -114,10 +121,13 @@ func main() {
 		log.Fatal(err)
 	}
 
-	fmt.Println("Starting Clickjacking scanner")
 	jobs := make(chan string)
 	ch := make(chan string)
 	var wg sync.WaitGroup
+	if config.PathUrls == "" {
+		fmt.Println("[-] No URLs path was specified")
+		return
+	}
 	urls := GetUrls(config.PathUrls)
 	var vulnerableUrls []string
 	client := &http.Client{
@@ -128,8 +138,12 @@ func main() {
 			},
 		},
 	}
-
+	fmt.Println("[+] Starting Clickjacking scanner")
 	fmt.Println("Got ", len(urls), "URLs to check.")
+	if config.MaxWorkers < 1 {
+		fmt.Println("[-] Can't use less than 1 worker.")
+		return
+	}
 	for workers := 1; workers <= config.MaxWorkers; workers++ {
 		wg.Add(1)
 		go worker(jobs, ch, client, &wg)
@@ -153,7 +167,7 @@ func main() {
 	}
 
 	fmt.Println("[+] Total vulnerabilities: ", len(vulnerableUrls))
-	fmt.Println("Finished Clickjacking scanner")
+
 	if config.OutputFile != "" {
 		f, err := os.Create(config.OutputFile)
 		if err != nil {
